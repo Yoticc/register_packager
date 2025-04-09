@@ -1,4 +1,51 @@
-﻿namespace register_packager;
+﻿using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
+
+namespace register_packager;
+
+unsafe class Memory 
+{
+    [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, EntryPoint = "malloc")]
+    public static extern void* Alloc(nint size);
+
+    [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, EntryPoint = "free")] 
+    public static extern void Free(void* pointer);
+
+    static MemoryProvider Provider = Avx2.IsSupported ? new AVX2MemoryProvied() : new DefaultMemoryProvider();
+
+    public static void Copy(void* source, void* destination, int length) => Provider.Copy(source, destination, length);
+
+    abstract class MemoryProvider
+    {
+        public void Copy(void* source, void* destination, int length) => Copy((byte*)source, (byte*)destination, length);
+        public abstract void Copy(byte* source, byte* destination, int length);
+    }
+
+    class DefaultMemoryProvider : MemoryProvider
+    {
+        public override unsafe void Copy(byte* source, byte* destination, int length) => Buffer.MemoryCopy(source, destination, length, length);
+    }
+
+    class AVX2MemoryProvied : MemoryProvider
+    {
+        public override unsafe void Copy(byte* source, byte* destination, int length)
+        {
+            const int BlockSize = 32;
+
+            int i = 0;
+            int lastBlockIndex = length - BlockSize;
+
+            for (; i <= lastBlockIndex; i += BlockSize)
+            {
+                var vector = Avx.LoadVector256(source + i);
+                Avx.Store(destination + i, vector);
+            }
+
+            for (; i < length; i++)
+                source[i] = destination[i];
+        }
+    }
+}
 
 public class Algorithm
 {
@@ -10,27 +57,27 @@ public class Algorithm
         return GetChunks(node).ToArray();
     }
 
-    private static int GetNumberWithZeros(int x) => (int)Math.Pow(10, (int)Math.Floor(Math.Log10(x)) + 1);
-    
-    private static IEnumerable<int[]> GetChunks(Node node)
+    static int GetNumberWithZeros(int x) => (int)Math.Pow(10, (int)Math.Floor(Math.Log10(x)) + 1);
+
+    static IEnumerable<int[]> GetChunks(Node node)
     {
         var current = node;
         while (current is not null)
         {
             if (current.Registers.Length != 0)
             {
-                yield return current.Registers;   
+                yield return current.Registers;
             }
             current = current.Next;
         }
     }
-    
+
     public class Node
     {
         public int[] Registers { get; set; } = [];
         public Node? Next { get; set; }
     }
-    
+
     private static Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
     {
         var node = root;
@@ -65,7 +112,7 @@ public class Algorithm
                             {
                                 min = garbage;
                                 prefer = CreateNodeWithoutEmptyRegisters(trimLeft, taken, next);
-                            }   
+                            }
                         }
                     }
                     if (!ExcessLimit(maxLimit, joinRight))
@@ -89,7 +136,7 @@ public class Algorithm
         }
         return root;
     }
-    
+
     private static Node CreateNodeWithoutEmptyRegisters(int[] left, int[] right, Node? rest)
     {
         if (left.Length == 0)
@@ -118,11 +165,11 @@ public class Algorithm
             }
         };
     }
-    
+
     private static bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk, out int[] taken, out int[] rest)
     {
         ArgumentOutOfRangeException.ThrowIfZero(chunk.Length);
-        
+
         if (ExcessLimit(maxLimit, chunk))
         {
             var index = chunk.Length - 1;
@@ -142,9 +189,9 @@ public class Algorithm
         taken = chunk.ToArray();
         return false;
     }
-    
+
     private static bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk) => chunk[^1] - chunk[0] + 1 > maxLimit;
-    
+
     private static int CalculateGarbage(ReadOnlySpan<int> chunk1, ReadOnlySpan<int> chunk2) => chunk1.Length == 0 ? CalculateGarbage(chunk2) : CalculateGarbage(chunk1) + CalculateGarbage(chunk2);
 
     private static int CalculateHeight(Node? node)
@@ -185,12 +232,12 @@ public class Algorithm
         }
         return garbage;
     }
-    
+
     private static (int[] TrimLeft, int[] JoinRight)[] CombineWithLowerGarbageThanSource(ReadOnlySpan<int> chunk1, ReadOnlySpan<int> chunk2)
     {
         List<(int[] TrimLeft, int[] JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
-        ReadOnlySpan<int> concat = [..chunk1, ..chunk2];
+        ReadOnlySpan<int> concat = [.. chunk1, .. chunk2];
         for (var splitPoint = chunk1.Length - 1; splitPoint >= 0; splitPoint--)
         {
             var trimLeft = concat[..splitPoint];
@@ -204,12 +251,12 @@ public class Algorithm
         }
         return res.ToArray();
     }
-    
+
     private static Node Chunk(int maxLimit, int[] registers)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLimit);
         ArgumentOutOfRangeException.ThrowIfZero(registers.Length);
-     
+
         var root = new Node();
         var index = 0;
         var previous = registers[0];

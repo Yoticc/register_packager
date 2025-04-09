@@ -7,6 +7,11 @@ namespace register_packager_benchmarks;
 [MemoryDiagnoser]
 public class Benchmarks
 {
+    public Benchmarks()
+    {
+        Setup();
+    }
+
     private int[] _registers = null!;
     
     [GlobalSetup]
@@ -1008,6 +1013,7 @@ public class Benchmarks
     [Benchmark]
     public void On16394RegistersWithMax256()
     {
-        _ = Algorithm.Solve(256, _registers);
+        var a = Algorithm.Solve(256, _registers);
+        _ = 3;
     }
 }
