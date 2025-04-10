@@ -4,6 +4,8 @@ using System.Diagnostics.Metrics;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
+using System.Security.Cryptography;
+using static register_packager.AlgorithmOriginal;
 
 namespace register_packager;
 
@@ -65,7 +67,7 @@ public unsafe class Algorithm : IDisposable
         registersHandle = GCHandle.Alloc(registersArray, GCHandleType.Pinned);
         registers = (int*)registersHandle.AddrOfPinnedObject();
 
-        backedGarbage = Memory.Alloc<int>(registersArray.Length);
+        bakedGarbage = Memory.Alloc<int>(registersArray.Length);
         BakeGarbage();
     }
 
@@ -74,19 +76,23 @@ public unsafe class Algorithm : IDisposable
     GCHandle registersHandle;
     int* registers;
 
-    int* backedGarbage;
+    int* bakedGarbage;
+    int totalGarbage;
     void BakeGarbage()
     {
-        var value = *backedGarbage = 0;
+        var length = registersArray.Length;
+        var value = *bakedGarbage = 0;
         var register = registers[0];
         int nextRegister;
-        for (var index = 1; index < registersArray.Length; index++)
+        for (var index = 1; index < length; index++)
         {
             nextRegister = registers[index];
             value += nextRegister - register - 1;
             register = nextRegister;
-            backedGarbage[index] = value;
+            bakedGarbage[index] = value;
         }
+
+        totalGarbage = bakedGarbage[length - 1];
     }
 
     int[][] InstanceSolve()
@@ -115,14 +121,42 @@ public unsafe class Algorithm : IDisposable
 
     class Node
     {
-        [AllowNull] public Array Registers;
+        public Node(Algorithm algorithm, Array registers, Node? next = null)
+        {
+            Next = next;
+
+            SetRegisters(algorithm, registers);
+        }
+
+        Array registers;
         public Node? Next;
+        public int StartIndex, EndIndex;
+
+        public Array Registers => registers;
+
+        public void SetRegisters(Algorithm algorithm, Array registers)
+        {
+            this.registers = registers;
+            EndIndex = (StartIndex = (int)(registers.Pointer - algorithm.registers)) + registers.Length - 1;
+        }
+
+        public Node LastNode
+        {
+            get
+            {
+                var current = this;
+                var next = current;
+                do current = next;
+                while ((next = current.Next) is not null);
+                return current;
+            }
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]
     struct Array
     {
-        Array(int* pointer, int length)
+        public Array(int* pointer, int length)
         {
             Pointer = pointer;
             Length = length;
@@ -131,22 +165,28 @@ public unsafe class Algorithm : IDisposable
         public int* Pointer;
         public int Length;
 
+        public int* EndPointer => Pointer + Length;
+
+        public int F0 => Pointer[0];
+        public int F1 => Pointer[1];
+        public int F2 => Pointer[2];
+
         public static Array Empty = new(null, 0);
 
         public int this[int index] => Pointer[index];
-        public int this[Index index] => Pointer[ToInt(index)];
+        public int this[Index index] => Pointer[IndexToInt(index)];
         public Array this[Range range]
         {
             get
             {
-                var start = ToInt(range.Start);
-                var end = ToInt(range.End);
+                var start = IndexToInt(range.Start);
+                var end = IndexToInt(range.End);
                 var length = end - start;
                 return new(Pointer + start, length);
             }
         }
 
-        int ToInt(Index index) => index.IsFromEnd ? Length - index.Value : index.Value;
+        int IndexToInt(Index index) => index.IsFromEnd ? Length - index.Value : index.Value;
 
         public int[] ToArray(Algorithm algorithm)
         {
@@ -210,7 +250,7 @@ public unsafe class Algorithm : IDisposable
                         }
                     }
                 }
-                node.Registers = prefer.Registers;
+                node.SetRegisters(this, prefer.Registers);
                 node.Next = prefer.Next;
             }
             else
@@ -225,30 +265,10 @@ public unsafe class Algorithm : IDisposable
     Node CreateNodeWithoutEmptyRegisters(Array left, Array right, Node? rest)
     {
         if (left.Length == 0)
-        {
-            return new Node()
-            {
-                Registers = right,
-                Next = rest
-            };
-        }
+            return new Node(this, right, rest);
         if (right.Length == 0)
-        {
-            return new Node()
-            {
-                Registers = left,
-                Next = rest
-            };
-        }
-        return new Node()
-        {
-            Registers = left,
-            Next = new Node()
-            {
-                Registers = right,
-                Next = rest
-            }
-        };
+            return new Node(this, left, rest);
+        return new Node(this, left, new Node(this, right, rest));
     }
 
     bool ExcessLimit(int maxLimit, Array chunk, out Array taken, out Array rest)
@@ -294,33 +314,29 @@ public unsafe class Algorithm : IDisposable
         return height;
     }
 
+    public int GetRegisterIndex(int* register) => (int)((register - registers) / sizeof(int));
+
     int CalculateGarbage(Node? node)
     {
+        var bakedGarbage = this.bakedGarbage;
         var garbage = 0;
-        var current = node;
-        while (current is not null)
+        while (node is not null)
         {
-            garbage += CalculateGarbage(current.Registers);
-            current = current.Next;
+            garbage += bakedGarbage[node.EndIndex] - bakedGarbage[node.StartIndex];
+            node = node.Next;
         }
         return garbage;
     }
 
-    int CalculateGarbage(Array chunk)
+    int CalculateGarbage(Array chunk) => CalculateGarbage(bakedGarbage, chunk);
+    int CalculateGarbage(int* bakedGarbage, Array chunk)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(chunk.Length);
-
-        var garbage = 0;
-        var index = 1;  
-        while (index < chunk.Length)
-        {
-            garbage += chunk[index] - chunk[index - 1] - 1;
-            index++;
-        }
-        return garbage;
+        var start = bakedGarbage + (int)(chunk.Pointer - registers);
+        var end = start + chunk.Length - 1;
+        return *end - *start;
     }
 
-    List<(Array TrimLeft, Array JoinRight)> CombineWithLowerGarbageThanSource(Array chunk1, Array chunk2)
+    List <(Array TrimLeft, Array JoinRight)> CombineWithLowerGarbageThanSource(Array chunk1, Array chunk2)
     {
         List<(Array TrimLeft, Array JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
@@ -341,7 +357,7 @@ public unsafe class Algorithm : IDisposable
 
     Node Chunk(int maxLimit, Array registers)
     {
-        var root = new Node { Registers = Array.Empty };
+        var root = new Node(this, Array.Empty);
         var index = 0;
         var previous = registers[0];
         var chunkStart = 0;
@@ -354,10 +370,7 @@ public unsafe class Algorithm : IDisposable
             currentLimit += distance;
             if (currentLimit > maxLimit)
             {
-                node.Next = new Node
-                {
-                    Registers = registers[chunkStart..index]
-                };
+                node.Next = new Node(this, registers[chunkStart..index]);
                 node = node.Next;
                 currentLimit = 1;
                 chunkStart = index;
@@ -367,10 +380,7 @@ public unsafe class Algorithm : IDisposable
         }
         if (currentLimit != 0)
         {
-            node.Next = new Node
-            {
-                Registers = registers[chunkStart..index]
-            };
+            node.Next = new Node(this, registers[chunkStart..index]);
         }
         return root;
     }
@@ -378,7 +388,7 @@ public unsafe class Algorithm : IDisposable
     public void Dispose()
     {
         registersHandle.Free();
-        Memory.Free(backedGarbage);
+        Memory.Free(bakedGarbage);
     }
 
     public static int[][] Solve(int maxLimit, int[] registers)
