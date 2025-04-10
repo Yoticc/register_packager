@@ -1027,30 +1027,17 @@ public class Benchmarks
 
     static bool CompareArrays(int[][] array1, int[][] array2)
     {
-        // Сравниваем размеры массивов
         if (array1.Length != array2.Length)
-        {
             return false;
-        }
 
         for (int i = 0; i < array1.Length; i++)
         {
-            // Сравниваем размеры подмассивов
             if (array1[i].Length != array2[i].Length)
-            {
                 return false;
-            }
-
-            // Сравниваем элементы подмассивов
             for (int j = 0; j < array1[i].Length; j++)
-            {
                 if (array1[i][j] != array2[i][j])
-                {
                     return false;
-                }
-            }
         }
-
-        return true; // Массивы равны
+        return true;
     }
 }

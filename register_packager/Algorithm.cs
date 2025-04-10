@@ -1,4 +1,7 @@
-﻿using System.Diagnostics.CodeAnalysis;
+﻿using System;
+using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.Metrics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 
@@ -11,6 +14,8 @@ unsafe class Memory
 
     [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, EntryPoint = "free")]
     public static extern void Free(void* pointer);
+
+    public static T* Alloc<T>(int count) where T : unmanaged => (T*)Alloc(count * sizeof(T));
 
     static MemoryProvider Provider = Avx2.IsSupported ? new AVX2MemoryProvied() : new DefaultMemoryProvider();
 
@@ -55,16 +60,34 @@ public unsafe class Algorithm : IDisposable
         ArgumentOutOfRangeException.ThrowIfZero(registersArray.Length);
 
         this.maxLimit = maxLimit;
-        this.registersArray = registersArray;
 
+        this.registersArray = registersArray;
         registersHandle = GCHandle.Alloc(registersArray, GCHandleType.Pinned);
         registers = (int*)registersHandle.AddrOfPinnedObject();
+
+        backedGarbage = Memory.Alloc<int>(registersArray.Length);
+        BakeGarbage();
     }
 
     int maxLimit;
     int[] registersArray;
     GCHandle registersHandle;
     int* registers;
+
+    int* backedGarbage;
+    void BakeGarbage()
+    {
+        var value = *backedGarbage = 0;
+        var register = registers[0];
+        int nextRegister;
+        for (var index = 1; index < registersArray.Length; index++)
+        {
+            nextRegister = registers[index];
+            value += nextRegister - register - 1;
+            register = nextRegister;
+            backedGarbage[index] = value;
+        }
+    }
 
     int[][] InstanceSolve()
     {
@@ -109,10 +132,6 @@ public unsafe class Algorithm : IDisposable
         public int Length;
 
         public static Array Empty = new(null, 0);
-
-        public int F0 => Pointer[0];
-        public int F1 => Pointer[1];
-        public int F2 => Pointer[2];
 
         public int this[int index] => Pointer[index];
         public int this[Index index] => Pointer[ToInt(index)];
@@ -356,7 +375,11 @@ public unsafe class Algorithm : IDisposable
         return root;
     }
 
-    public void Dispose() => registersHandle.Free();
+    public void Dispose()
+    {
+        registersHandle.Free();
+        Memory.Free(backedGarbage);
+    }
 
     public static int[][] Solve(int maxLimit, int[] registers)
     {

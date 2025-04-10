@@ -1,4 +1,5 @@
 ﻿using BenchmarkDotNet.Running;
+using register_packager;
 using register_packager_benchmarks;
 
 //Console.Write(new Benchmarks().Eq());
