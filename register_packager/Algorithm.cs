@@ -2,15 +2,19 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
-using static register_packager.AlgorithmOriginal;
 
 namespace register_packager;
 
 unsafe class Memory
 {
+    [DllImport("kernel32")]
+    public static extern void ZeroMemory(void* destination, int size);
+
     [DllImport("ucrtbase", CallingConvention = CallingConvention.Cdecl, EntryPoint = "malloc")]
     public static extern void* Alloc(nint size);
 
@@ -18,6 +22,15 @@ unsafe class Memory
     public static extern void Free(void* pointer);
 
     public static T* Alloc<T>(int count) where T : unmanaged => (T*)Alloc(count * sizeof(T));
+
+    public static void* ZeroAlloc(int size)
+    {
+        var pointer = Alloc(size);
+        Provider.Zero(pointer, size);
+        return pointer;
+    }
+
+    public static T* ZeroAlloc<T>() where T : unmanaged => (T*)ZeroAlloc(sizeof(T));
 
     static MemoryProvider Provider = Avx2.IsSupported ? new AVX2MemoryProvied() : new DefaultMemoryProvider();
 
@@ -27,19 +40,22 @@ unsafe class Memory
     {
         public void Copy(void* source, void* destination, int length) => Copy((byte*)source, (byte*)destination, length);
         public abstract void Copy(byte* source, byte* destination, int length);
+        public void Zero(void* destination, int length) => Zero((byte*)destination, length);
+        public abstract void Zero(byte* destination, int length);
     }
 
     class DefaultMemoryProvider : MemoryProvider
     {
         public override unsafe void Copy(byte* source, byte* destination, int length) => Buffer.MemoryCopy(source, destination, length, length);
+        public override void Zero(byte* destination, int length) => ZeroMemory(destination, length);
     }
 
     class AVX2MemoryProvied : MemoryProvider
     {
+        const int BlockSize = 32;
+
         public override unsafe void Copy(byte* source, byte* destination, int length)
         {
-            const int BlockSize = 32;
-
             int i = 0;
             int lastBlockIndex = length - BlockSize;
             for (; i <= lastBlockIndex; i += BlockSize)
@@ -51,6 +67,20 @@ unsafe class Memory
             for (; i < length; i++)
                 destination[i] = source[i];
         }
+
+        public override void Zero(byte* destination, int length)
+        {
+            var vector = new Vector256<byte>();
+
+            int i = 0;
+            int lastBlockIndex = length - BlockSize;
+            for (; i <= lastBlockIndex; i += BlockSize)
+                Avx.Store(destination + i, vector);
+
+            for (; i < length; i++)
+                destination[i] = 0;
+        }
+
     }
 }
 
@@ -112,31 +142,21 @@ public unsafe class Algorithm : IDisposable
         while (current is not null)
         {
             if (current.Registers.Length != 0)
-            {
                 yield return current.Registers.ToArray();
-            }
             current = current.Next;
         }
     }
 
     class Node
     {
-        public Node(Algorithm algorithm, Chunk registers, Node? next = null)
+        public Node(Chunk registers, Node? next = null)
         {
             Next = next;
-
-            SetRegisters(algorithm, registers);
+            Registers = registers;
         }
 
-        Chunk registers;
         public Node? Next;
-
-        public Chunk Registers => registers;
-
-        public void SetRegisters(Algorithm algorithm, Chunk registers)
-        {
-            this.registers = registers;
-        }
+        public Chunk Registers;
 
         public Node LastNode
         {
@@ -169,13 +189,6 @@ public unsafe class Algorithm : IDisposable
         public int* Pointer;
         public int Length;
         public int Garbage;
-
-        public int* EndPointer => Pointer + Length;
-
-        // for debugging
-        public int E0 => Pointer[0];
-        public int E1 => Pointer[1];
-        public int E2 => Pointer[2];
 
         public static Chunk Empty = default;
 
@@ -233,9 +246,7 @@ public unsafe class Algorithm : IDisposable
                     if (trimLeft.Length != 0 && ExcessLimit(maxLimit, joinRight, out var taken, out var rest))
                     {
                         if (rearrange)
-                        {
                             continue;
-                        }
                         var next = JoinRecursive(maxLimit, decimalOrderMaxLimit, CreateNodeWithoutEmptyRegisters(Chunk.Empty, rest, node.Next.Next), true);
                         if (CalculateHeight(next) <= CalculateHeight(node.Next.Next))
                         {
@@ -257,7 +268,7 @@ public unsafe class Algorithm : IDisposable
                         }
                     }
                 }
-                node.SetRegisters(this, prefer.Registers);
+                node.Registers = prefer.Registers;
                 node.Next = prefer.Next;
             }
             else
@@ -272,10 +283,10 @@ public unsafe class Algorithm : IDisposable
     Node CreateNodeWithoutEmptyRegisters(Chunk left, Chunk right, Node? rest)
     {
         if (left.Length == 0)
-            return new Node(this, right, rest);
+            return new Node(right, rest);
         if (right.Length == 0)
-            return new Node(this, left, rest);
-        return new Node(this, left, new Node(this, right, rest));
+            return new Node(left, rest);
+        return new Node(left, new Node(right, rest));
     }
 
     bool ExcessLimit(int maxLimit, Chunk chunk, out Chunk taken, out Chunk rest)
@@ -304,7 +315,11 @@ public unsafe class Algorithm : IDisposable
 
     bool ExcessLimit(int maxLimit, Chunk chunk) => chunk[^1] - chunk[0] + 1 > maxLimit;
 
-    int CalculateGarbage(Chunk* chunk1, Chunk* chunk2) => chunk1->Length == 0 ? CalculateGarbage(chunk2) : CalculateGarbage(chunk1) + CalculateGarbage(chunk2);
+    int CalculateGarbage(Chunk* chunk1, Chunk* chunk2)
+    {
+        var bakedGarbage = this.bakedGarbage;
+        return chunk1->Length == 0 ? CalculateGarbage(bakedGarbage, chunk2) : CalculateGarbage(bakedGarbage, chunk1) + CalculateGarbage(bakedGarbage, chunk2);
+    }
 
     int CalculateHeight(Node? node)
     {
@@ -313,9 +328,7 @@ public unsafe class Algorithm : IDisposable
         while (current is not null)
         {
             if (current.Registers.Length != 0)
-            {
                 height++;
-            }
             current = current.Next;
         }
         return height;
@@ -342,7 +355,7 @@ public unsafe class Algorithm : IDisposable
         return *end - *start;
     }
 
-    List <(Chunk TrimLeft, Chunk JoinRight)> CombineWithLowerGarbageThanSource(Chunk* chunk1, Chunk* chunk2)
+    List<(Chunk TrimLeft, Chunk JoinRight)> CombineWithLowerGarbageThanSource(Chunk* chunk1, Chunk* chunk2)
     {
         List<(Chunk TrimLeft, Chunk JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
@@ -363,7 +376,7 @@ public unsafe class Algorithm : IDisposable
 
     Node ChunkRegisters(int maxLimit, Chunk registers)
     {
-        var root = new Node(this, Chunk.Empty);
+        var root = new Node(Chunk.Empty);
         var index = 0;
         var previous = registers[0];
         var chunkStart = 0;
@@ -376,7 +389,7 @@ public unsafe class Algorithm : IDisposable
             currentLimit += distance;
             if (currentLimit > maxLimit)
             {
-                node.Next = new Node(this, registers[this, chunkStart..index]);
+                node.Next = new Node(registers[this, chunkStart..index]);
                 node = node.Next;
                 currentLimit = 1;
                 chunkStart = index;
@@ -385,9 +398,7 @@ public unsafe class Algorithm : IDisposable
             index++;
         }
         if (currentLimit != 0)
-        {
-            node.Next = new Node(this, registers[this, chunkStart..index]);
-        }
+            node.Next = new Node(registers[this, chunkStart..index]);
         return root;
     }
 

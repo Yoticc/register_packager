@@ -1008,13 +1008,6 @@ public class Benchmarks
             99769, 99772, 99773, 99784, 99785, 99806, 99811, 99814, 99821, 99853, 99862, 99864, 99882, 99891, 99897,
             99915, 99919, 99920, 99928, 99933, 99935, 99936, 99968, 99971, 99974, 99985, 99995, 99997
         ];
-
-        /*
-        _registers = 
-        [
-            1, 2, 5, 6, 10, 12, 13, 14, 19, 20, 22, 24, 27, 28, 29, 30, 31, 36, 37, 38, 39, 40
-        ];
-        */    
     }
 
     [Benchmark]
@@ -1022,22 +1015,4 @@ public class Benchmarks
 
     [Benchmark]
     public void Reimplemented() => Algorithm.Solve(256, _registers);
-
-    public bool Eq() => CompareArrays(Algorithm.Solve(256, _registers), AlgorithmOriginal.Solve(256, _registers));
-
-    static bool CompareArrays(int[][] array1, int[][] array2)
-    {
-        if (array1.Length != array2.Length)
-            return false;
-
-        for (int i = 0; i < array1.Length; i++)
-        {
-            if (array1[i].Length != array2[i].Length)
-                return false;
-            for (int j = 0; j < array1[i].Length; j++)
-                if (array1[i][j] != array2[i][j])
-                    return false;
-        }
-        return true;
-    }
 }
