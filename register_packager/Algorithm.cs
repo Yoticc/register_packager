@@ -63,7 +63,7 @@ public unsafe class Algorithm : IDisposable
 
         this.maxLimit = maxLimit;
 
-        this.registersArray = registersArray;
+        registersLength = registersArray.Length;
         registersHandle = GCHandle.Alloc(registersArray, GCHandleType.Pinned);
         registers = (int*)registersHandle.AddrOfPinnedObject();
 
@@ -72,7 +72,7 @@ public unsafe class Algorithm : IDisposable
     }
 
     int maxLimit;
-    int[] registersArray;
+    int registersLength;
     GCHandle registersHandle;
     int* registers;
 
@@ -80,7 +80,7 @@ public unsafe class Algorithm : IDisposable
     int totalGarbage;
     void BakeGarbage()
     {
-        var length = registersArray.Length;
+        var length = registersLength;
         var value = *bakedGarbage = 0;
         var register = registers[0];
         int nextRegister;
@@ -97,7 +97,7 @@ public unsafe class Algorithm : IDisposable
 
     int[][] InstanceSolve()
     {
-        var array = Chunk.FromBclArray(registers, registersArray);
+        var array = Chunk.FromBclArray(this, registers, registersLength);
         var root = ChunkRegisters(maxLimit, array).Next;
         ArgumentNullException.ThrowIfNull(root);
         var node = JoinRecursive(maxLimit, GetNumberWithZeros(maxLimit), root, false);
@@ -154,39 +154,41 @@ public unsafe class Algorithm : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     struct Chunk
     {
-        public Chunk(int* registers, int* pointer, int length)
+        public Chunk(Algorithm algorithm, int* pointer, int length)
         {
-            RegistersPool = registers;
             Pointer = pointer;
             Length = length;
 
-            EndIndex = (StartIndex = (int)(Pointer - registers)) + length - 1;
+            var registers = algorithm.registers;
+            var bakedGarbage = algorithm.bakedGarbage;
+            var start = bakedGarbage + (int)(pointer - registers);
+            var end = start + length - 1;
+            Garbage = *end - *start;
         }
 
-        public int* RegistersPool;
         public int* Pointer;
         public int Length;
+        public int Garbage;
 
         public int* EndPointer => Pointer + Length;
-        public int StartIndex, EndIndex;
 
         // for debugging
         public int E0 => Pointer[0];
         public int E1 => Pointer[1];
         public int E2 => Pointer[2];
 
-        public static Chunk Empty = new(null, null, 0);
+        public static Chunk Empty = default;
 
         public int this[int index] => Pointer[index];
         public int this[Index index] => Pointer[IndexToInt(index)];
-        public Chunk this[Range range]
+        public Chunk this[Algorithm algorithm, Range range]
         {
             get
             {
                 var start = IndexToInt(range.Start);
                 var end = IndexToInt(range.End);
                 var length = end - start;
-                return new(RegistersPool, Pointer + start, length);
+                return new(algorithm, Pointer + start, length);
             }
         }
 
@@ -202,10 +204,10 @@ public unsafe class Algorithm : IDisposable
             return array;
         }
 
-        public Chunk Concat(Chunk with) => new(RegistersPool, Pointer, Length + with.Length);
-        public Chunk Concat(Chunk* with) => new(RegistersPool, Pointer, Length + with->Length);
+        public Chunk Concat(Algorithm algorithm, Chunk with) => new(algorithm, Pointer, Length + with.Length);
+        public Chunk Concat(Algorithm algorithm, Chunk* with) => new(algorithm, Pointer, Length + with->Length);
 
-        public static Chunk FromBclArray(int* pointer, int[] array) => new(pointer, pointer, array.Length);
+        public static Chunk FromBclArray(Algorithm algorithm, int* pointer, int length) => new(algorithm, pointer, length);
     }
 
     Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
@@ -285,14 +287,14 @@ public unsafe class Algorithm : IDisposable
             var index = chunk.Length - 1;
             while (index >= 0)
             {
-                if (!ExcessLimit(maxLimit, chunk[..index]))
+                if (!ExcessLimit(maxLimit, chunk[this, ..index]))
                 {
                     break;
                 }
                 index--;
             }
-            rest = chunk[index..];
-            taken = chunk[..index];
+            rest = chunk[this, index..];
+            taken = chunk[this, ..index];
             return true;
         }
         rest = Chunk.Empty;
@@ -323,11 +325,10 @@ public unsafe class Algorithm : IDisposable
 
     int CalculateGarbage(Node? node)
     {
-        var bakedGarbage = this.bakedGarbage;
         var garbage = 0;
         while (node is not null)
         {
-            garbage += bakedGarbage[node.Registers.EndIndex] - bakedGarbage[node.Registers.StartIndex];
+            garbage += node.Registers.Garbage;
             node = node.Next;
         }
         return garbage;
@@ -345,11 +346,11 @@ public unsafe class Algorithm : IDisposable
     {
         List<(Chunk TrimLeft, Chunk JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
-        var concat = chunk1->Concat(chunk2);
+        var concat = chunk1->Concat(this, chunk2);
         for (var splitPoint = chunk1->Length - 1; splitPoint >= 0; splitPoint--)
         {
-            var trimLeft = concat[..splitPoint];
-            var joinRight = concat[splitPoint..];
+            var trimLeft = concat[this, ..splitPoint];
+            var joinRight = concat[this, splitPoint..];
             var garbage = CalculateGarbage(&trimLeft, &joinRight);
             if (garbage < min || trimLeft.Length == 0)
             {
@@ -375,7 +376,7 @@ public unsafe class Algorithm : IDisposable
             currentLimit += distance;
             if (currentLimit > maxLimit)
             {
-                node.Next = new Node(this, registers[chunkStart..index]);
+                node.Next = new Node(this, registers[this, chunkStart..index]);
                 node = node.Next;
                 currentLimit = 1;
                 chunkStart = index;
@@ -385,7 +386,7 @@ public unsafe class Algorithm : IDisposable
         }
         if (currentLimit != 0)
         {
-            node.Next = new Node(this, registers[chunkStart..index]);
+            node.Next = new Node(this, registers[this, chunkStart..index]);
         }
         return root;
     }
