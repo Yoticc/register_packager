@@ -1,9 +1,6 @@
-﻿using System;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
-using System.Security.Cryptography;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace register_packager;
 
@@ -45,7 +42,7 @@ unsafe class Memory
             }
 
             for (; i < length; i++)
-                source[i] = destination[i];
+                destination[i] = source[i];
         }
     }
 }
@@ -71,7 +68,8 @@ public unsafe class Algorithm : IDisposable
 
     int[][] InstanceSolve()
     {
-        var root = Chunk(maxLimit, registersArray).Next;
+        var array = Array.FromBclArray(registers, registersArray);
+        var root = Chunk(maxLimit, array).Next;
         ArgumentNullException.ThrowIfNull(root);
         var node = JoinRecursive(maxLimit, GetNumberWithZeros(maxLimit), root, false);
         return GetChunks(node).ToArray();
@@ -98,30 +96,52 @@ public unsafe class Algorithm : IDisposable
         public Node? Next;
     }
 
-    class Array
+    [StructLayout(LayoutKind.Sequential)]
+    struct Array
     {
-        Array(int start, int end) => (Start, End) = (start, end);
+        Array(int* pointer, int length)
+        {
+            Pointer = pointer;
+            Length = length;
+        }
 
-        public int Start;
-        public int End;
+        public int* Pointer;
+        public int Length;
 
-        public int Length => End - Start;
+        public static Array Empty = new(null, 0);
 
-        public static Array Empty = FromRange(0, 0);
+        public int F0 => Pointer[0];
+        public int F1 => Pointer[1];
+        public int F2 => Pointer[2];
+
+        public int this[int index] => Pointer[index];
+        public int this[Index index] => Pointer[ToInt(index)];
+        public Array this[Range range]
+        {
+            get
+            {
+                var start = ToInt(range.Start);
+                var end = ToInt(range.End);
+                var length = end - start;
+                return new(Pointer + start, length);
+            }
+        }
+
+        int ToInt(Index index) => index.IsFromEnd ? Length - index.Value : index.Value;
 
         public int[] ToArray(Algorithm algorithm)
         {
             var length = Length;
-            var offset = Start;
-
             var array = new int[length];
             fixed (int* arrayPointer = array)
-                Memory.Copy(algorithm.registers + offset, arrayPointer, length * sizeof(int));
+                Memory.Copy(Pointer, arrayPointer, length * sizeof(int));
 
             return array;
         }
 
-        public static Array FromRange(int start, int end) => new(start, end);
+        public Array Concat(Array with) => new(Pointer, Length + with.Length);
+
+        public static Array FromBclArray(int* pointer, int[] array) => new(pointer, array.Length);
     }
 
     Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
@@ -227,11 +247,11 @@ public unsafe class Algorithm : IDisposable
                 }
                 index--;
             }
-            rest = chunk[index..].ToArray();
-            taken = chunk[..index].ToArray();
+            rest = chunk[index..];
+            taken = chunk[..index];
             return true;
         }
-        rest = [];
+        rest = Array.Empty;
         taken = chunk;
         return false;
     }
@@ -285,7 +305,7 @@ public unsafe class Algorithm : IDisposable
     {
         List<(Array TrimLeft, Array JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
-        var concat = [.. chunk1, .. chunk2];
+        var concat =  chunk1.Concat(chunk2);
         for (var splitPoint = chunk1.Length - 1; splitPoint >= 0; splitPoint--)
         {
             var trimLeft = concat[..splitPoint];
@@ -294,18 +314,15 @@ public unsafe class Algorithm : IDisposable
             if (garbage < min || trimLeft.Length == 0)
             {
                 min = garbage;
-                res.Add((trimLeft.ToArray(), joinRight.ToArray()));
+                res.Add((trimLeft, joinRight));
             }
         }
         return res;
     }
 
-    Node Chunk(int maxLimit, int[] registers)
+    Node Chunk(int maxLimit, Array registers)
     {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLimit);
-        ArgumentOutOfRangeException.ThrowIfZero(registers.Length);
-
-        var root = new Node();
+        var root = new Node { Registers = Array.Empty };
         var index = 0;
         var previous = registers[0];
         var chunkStart = 0;
@@ -318,7 +335,7 @@ public unsafe class Algorithm : IDisposable
             currentLimit += distance;
             if (currentLimit > maxLimit)
             {
-                node.Next = new Node()
+                node.Next = new Node
                 {
                     Registers = registers[chunkStart..index]
                 };
@@ -331,7 +348,7 @@ public unsafe class Algorithm : IDisposable
         }
         if (currentLimit != 0)
         {
-            node.Next = new Node()
+            node.Next = new Node
             {
                 Registers = registers[chunkStart..index]
             };
@@ -348,60 +365,38 @@ public unsafe class Algorithm : IDisposable
     }
 }
 
-
-/*
-public class Algorithm
+public class AlgorithmOriginal
 {
     public static int[][] Solve(int maxLimit, int[] registers)
     {
-        using var algorithmInstance = new AlgorithmInstance(maxLimit, registers);
-        return algorithmInstance.Solve();
-    }    
-}
-
-unsafe class AlgorithmInstance : IDisposable
-{
-    public AlgorithmInstance(int maxLimit, int[] registersArray)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLimit);
-        ArgumentOutOfRangeException.ThrowIfZero(registersArray.Length);
-
-        this.maxLimit = maxLimit;
-        this.registersArray = registersArray;
-
-        registersHandle = GCHandle.Alloc(registersArray, GCHandleType.Pinned);
-        registers = (int*)registersHandle.AddrOfPinnedObject();
-    }
-
-    int maxLimit;
-    int[] registersArray;
-    GCHandle registersHandle;
-    int* registers;
-
-    public int[][] Solve()
-    {
-        var root = Chunk().Next;
+        var root = Chunk(maxLimit, registers).Next;
         ArgumentNullException.ThrowIfNull(root);
         var node = JoinRecursive(maxLimit, GetNumberWithZeros(maxLimit), root, false);
         return GetChunks(node).ToArray();
     }
 
-    int GetNumberWithZeros(int x) => (int)Math.Pow(10, (int)Math.Floor(Math.Log10(x)) + 1);
+    private static int GetNumberWithZeros(int x) => (int)Math.Pow(10, (int)Math.Floor(Math.Log10(x)) + 1);
 
-    IEnumerable<int[]> GetChunks(Node node)
+    private static IEnumerable<int[]> GetChunks(Node node)
     {
         var current = node;
         while (current is not null)
         {
             if (current.Registers.Length != 0)
             {
-                yield return current.Registers.ToArray(this);
+                yield return current.Registers;
             }
             current = current.Next;
         }
     }
 
-    Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
+    public class Node
+    {
+        public int[] Registers { get; set; } = [];
+        public Node? Next { get; set; }
+    }
+
+    private static Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
     {
         var node = root;
         while (node is not null)
@@ -460,7 +455,7 @@ unsafe class AlgorithmInstance : IDisposable
         return root;
     }
 
-    Node CreateNodeWithoutEmptyRegisters(RegisterSpan left, RegisterSpan right, Node? rest)
+    private static Node CreateNodeWithoutEmptyRegisters(int[] left, int[] right, Node? rest)
     {
         if (left.Length == 0)
         {
@@ -478,7 +473,6 @@ unsafe class AlgorithmInstance : IDisposable
                 Next = rest
             };
         }
-
         return new Node()
         {
             Registers = left,
@@ -490,7 +484,7 @@ unsafe class AlgorithmInstance : IDisposable
         };
     }
 
-    bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk, out RegisterSpan taken, out RegisterSpan rest)
+    private static bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk, out int[] taken, out int[] rest)
     {
         ArgumentOutOfRangeException.ThrowIfZero(chunk.Length);
 
@@ -509,16 +503,16 @@ unsafe class AlgorithmInstance : IDisposable
             taken = chunk[..index].ToArray();
             return true;
         }
-        rest = RegisterSpan.From(0, 0);
+        rest = [];
         taken = chunk.ToArray();
         return false;
     }
 
-    bool ExcessLimit(int maxLimit, RegisterSpan chunk) => chunk[^1] - chunk[0] + 1 > maxLimit;
+    private static bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk) => chunk[^1] - chunk[0] + 1 > maxLimit;
 
-    int CalculateGarbage(RegisterSpan chunk1, RegisterSpan chunk2) => chunk1.Length == 0 ? CalculateGarbage(chunk2) : CalculateGarbage(chunk1) + CalculateGarbage(chunk2);
+    private static int CalculateGarbage(ReadOnlySpan<int> chunk1, ReadOnlySpan<int> chunk2) => chunk1.Length == 0 ? CalculateGarbage(chunk2) : CalculateGarbage(chunk1) + CalculateGarbage(chunk2);
 
-    int CalculateHeight(Node? node)
+    private static int CalculateHeight(Node? node)
     {
         var height = 0;
         var current = node;
@@ -532,8 +526,7 @@ unsafe class AlgorithmInstance : IDisposable
         }
         return height;
     }
-
-    int CalculateGarbage(Node? node)
+    private static int CalculateGarbage(Node? node)
     {
         var garbage = 0;
         var current = node;
@@ -544,8 +537,7 @@ unsafe class AlgorithmInstance : IDisposable
         }
         return garbage;
     }
-
-    int CalculateGarbage(RegisterSpan chunk)
+    private static int CalculateGarbage(ReadOnlySpan<int> chunk)
     {
         ArgumentOutOfRangeException.ThrowIfZero(chunk.Length);
 
@@ -553,17 +545,17 @@ unsafe class AlgorithmInstance : IDisposable
         var index = 1;
         while (index < chunk.Length)
         {
-            garbage += chunk[this, index] - chunk[this, index - 1] - 1;
+            garbage += chunk[index] - chunk[index - 1] - 1;
             index++;
         }
         return garbage;
     }
 
-    (int[] TrimLeft, int[] JoinRight)[] CombineWithLowerGarbageThanSource(RegisterSpan chunk1, RegisterSpan chunk2)
+    private static (int[] TrimLeft, int[] JoinRight)[] CombineWithLowerGarbageThanSource(ReadOnlySpan<int> chunk1, ReadOnlySpan<int> chunk2)
     {
         List<(int[] TrimLeft, int[] JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
-        var concat = chunk1.Concat(chunk2);
+        ReadOnlySpan<int> concat = [.. chunk1, .. chunk2];
         for (var splitPoint = chunk1.Length - 1; splitPoint >= 0; splitPoint--)
         {
             var trimLeft = concat[..splitPoint];
@@ -578,15 +570,18 @@ unsafe class AlgorithmInstance : IDisposable
         return res.ToArray();
     }
 
-    Node Chunk()
+    private static Node Chunk(int maxLimit, int[] registers)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLimit);
+        ArgumentOutOfRangeException.ThrowIfZero(registers.Length);
+
         var root = new Node();
         var index = 0;
         var previous = registers[0];
         var chunkStart = 0;
         var currentLimit = 1;
         var node = root;
-        while (index < registersArray.Length)
+        while (index < registers.Length)
         {
             var current = registers[index];
             var distance = current - previous;
@@ -595,7 +590,7 @@ unsafe class AlgorithmInstance : IDisposable
             {
                 node.Next = new Node()
                 {
-                    Registers = RegisterSpan.From(chunkStart..index)
+                    Registers = registers[chunkStart..index]
                 };
                 node = node.Next;
                 currentLimit = 1;
@@ -608,82 +603,9 @@ unsafe class AlgorithmInstance : IDisposable
         {
             node.Next = new Node()
             {
-                Registers = RegisterSpan.From(chunkStart..index)
+                Registers = registers[chunkStart..index]
             };
         }
         return root;
     }
-
-    public void Dispose() => registersHandle.Free();
-
-    class Node
-    {
-        [AllowNull] public RegisterSpan Registers;
-        public Node? Next;
-    }
-
-    class RegisterSpan
-    {
-        public RegisterSpan(int offset, int length)
-        {
-            Offset = offset;
-            Length = length;
-        }
-
-        public int Offset;
-        public int Length;
-
-        public int End => Offset + Length;
-
-        public static RegisterSpan Empty = new RegisterSpan(0, 0);
-
-        public int this[AlgorithmInstance algorithm, Index index] => algorithm.registersArray[Offset + index.Value];
-        public RegisterSpan this[Range range] => From(range.Start.Value + Offset, range.End.Value + Offset);
-
-        public int[] ToArray(AlgorithmInstance algorithm)
-        {
-            var array = new int[Length];
-            algorithm.registersArray.CopyTo(array, Offset);
-
-            return array;
-        }
-
-        public ConcatedRegisterSpan Concat(RegisterSpan with) => new ConcatedRegisterSpan(this, with);
-
-        public static RegisterSpan From(Range range) => From(range.Start.Value, range.End.Value);
-        public static RegisterSpan From(int start, int end) => new(start, end - start);
-    }
-
-    class ConcatedRegisterSpan
-    {
-        public ConcatedRegisterSpan(RegisterSpan span1, RegisterSpan span2)
-        {
-            Span1 = span1;
-            Span2 = span2;
-        }
-
-        public RegisterSpan Span1;
-        public RegisterSpan Span2;
-
-        public ConcatedRegisterSpan this[Range range]
-        {
-            get
-            {
-                var start = range.Start.Value;
-                var end = range.End.Value;
-                var length = end - start;
-
-                var span1 = Span1;
-                var span2 = Span2;
-
-                if (end <= span1.Length)
-                {
-
-                }
-
-                return new(span1, span2);
-            }            
-        }
-    }
 }
-*/
