@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
 using System.Security.Cryptography;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace register_packager;
 
@@ -85,7 +86,7 @@ public unsafe class Algorithm : IDisposable
         {
             if (current.Registers.Length != 0)
             {
-                yield return current.Registers;
+                yield return current.Registers.ToArray(this);
             }
             current = current.Next;
         }
@@ -93,8 +94,34 @@ public unsafe class Algorithm : IDisposable
 
     class Node
     {
-        public int[] Registers { get; set; } = [];
-        public Node? Next { get; set; }
+        [AllowNull] public Array Registers;
+        public Node? Next;
+    }
+
+    class Array
+    {
+        Array(int start, int end) => (Start, End) = (start, end);
+
+        public int Start;
+        public int End;
+
+        public int Length => End - Start;
+
+        public static Array Empty = FromRange(0, 0);
+
+        public int[] ToArray(Algorithm algorithm)
+        {
+            var length = Length;
+            var offset = Start;
+
+            var array = new int[length];
+            fixed (int* arrayPointer = array)
+                Memory.Copy(algorithm.registers + offset, arrayPointer, length * sizeof(int));
+
+            return array;
+        }
+
+        public static Array FromRange(int start, int end) => new(start, end);
     }
 
     Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
@@ -123,7 +150,7 @@ public unsafe class Algorithm : IDisposable
                         {
                             continue;
                         }
-                        var next = JoinRecursive(maxLimit, decimalOrderMaxLimit, CreateNodeWithoutEmptyRegisters([], rest, node.Next.Next), true);
+                        var next = JoinRecursive(maxLimit, decimalOrderMaxLimit, CreateNodeWithoutEmptyRegisters(Array.Empty, rest, node.Next.Next), true);
                         if (CalculateHeight(next) <= CalculateHeight(node.Next.Next))
                         {
                             var garbage = CalculateGarbage(trimLeft, taken) + CalculateGarbage(next) + decimalOrderMaxLimit * CalculateHeight(next);
@@ -156,7 +183,7 @@ public unsafe class Algorithm : IDisposable
         return root;
     }
 
-     Node CreateNodeWithoutEmptyRegisters(int[] left, int[] right, Node? rest)
+    Node CreateNodeWithoutEmptyRegisters(Array left, Array right, Node? rest)
     {
         if (left.Length == 0)
         {
@@ -185,7 +212,7 @@ public unsafe class Algorithm : IDisposable
         };
     }
 
-    bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk, out int[] taken, out int[] rest)
+    bool ExcessLimit(int maxLimit, Array chunk, out Array taken, out Array rest)
     {
         ArgumentOutOfRangeException.ThrowIfZero(chunk.Length);
 
@@ -205,13 +232,13 @@ public unsafe class Algorithm : IDisposable
             return true;
         }
         rest = [];
-        taken = chunk.ToArray();
+        taken = chunk;
         return false;
     }
 
-    bool ExcessLimit(int maxLimit, ReadOnlySpan<int> chunk) => chunk[^1] - chunk[0] + 1 > maxLimit;
+    bool ExcessLimit(int maxLimit, Array chunk) => chunk[^1] - chunk[0] + 1 > maxLimit;
 
-    int CalculateGarbage(ReadOnlySpan<int> chunk1, ReadOnlySpan<int> chunk2) => chunk1.Length == 0 ? CalculateGarbage(chunk2) : CalculateGarbage(chunk1) + CalculateGarbage(chunk2);
+    int CalculateGarbage(Array chunk1, Array chunk2) => chunk1.Length == 0 ? CalculateGarbage(chunk2) : CalculateGarbage(chunk1) + CalculateGarbage(chunk2);
 
     int CalculateHeight(Node? node)
     {
@@ -240,7 +267,7 @@ public unsafe class Algorithm : IDisposable
         return garbage;
     }
 
-    int CalculateGarbage(ReadOnlySpan<int> chunk)
+    int CalculateGarbage(Array chunk)
     {
         ArgumentOutOfRangeException.ThrowIfZero(chunk.Length);
 
@@ -254,11 +281,11 @@ public unsafe class Algorithm : IDisposable
         return garbage;
     }
 
-    (int[] TrimLeft, int[] JoinRight)[] CombineWithLowerGarbageThanSource(ReadOnlySpan<int> chunk1, ReadOnlySpan<int> chunk2)
+    List<(Array TrimLeft, Array JoinRight)> CombineWithLowerGarbageThanSource(Array chunk1, Array chunk2)
     {
-        List<(int[] TrimLeft, int[] JoinRight)> res = [];
+        List<(Array TrimLeft, Array JoinRight)> res = [];
         var min = CalculateGarbage(chunk1, chunk2);
-        ReadOnlySpan<int> concat = [.. chunk1, .. chunk2];
+        var concat = [.. chunk1, .. chunk2];
         for (var splitPoint = chunk1.Length - 1; splitPoint >= 0; splitPoint--)
         {
             var trimLeft = concat[..splitPoint];
@@ -270,7 +297,7 @@ public unsafe class Algorithm : IDisposable
                 res.Add((trimLeft.ToArray(), joinRight.ToArray()));
             }
         }
-        return res.ToArray();
+        return res;
     }
 
     Node Chunk(int maxLimit, int[] registers)
@@ -314,7 +341,11 @@ public unsafe class Algorithm : IDisposable
 
     public void Dispose() => registersHandle.Free();
 
-    public static int[][] Solve(int maxLimit, int[] registers) => new Algorithm(maxLimit, registers).InstanceSolve();
+    public static int[][] Solve(int maxLimit, int[] registers)
+    {
+        using var algorithm = new Algorithm(maxLimit, registers);
+        return algorithm.InstanceSolve();
+    }
 }
 
 
