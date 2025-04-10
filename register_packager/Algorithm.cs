@@ -113,7 +113,7 @@ public unsafe class Algorithm : IDisposable
         {
             if (current.Registers.Length != 0)
             {
-                yield return current.Registers.ToArray(this);
+                yield return current.Registers.ToArray();
             }
             current = current.Next;
         }
@@ -130,14 +130,12 @@ public unsafe class Algorithm : IDisposable
 
         Chunk registers;
         public Node? Next;
-        public int StartIndex, EndIndex;
 
         public Chunk Registers => registers;
 
         public void SetRegisters(Algorithm algorithm, Chunk registers)
         {
             this.registers = registers;
-            EndIndex = (StartIndex = (int)(registers.Pointer - algorithm.registers)) + registers.Length - 1;
         }
 
         public Node LastNode
@@ -156,23 +154,28 @@ public unsafe class Algorithm : IDisposable
     [StructLayout(LayoutKind.Sequential)]
     struct Chunk
     {
-        public Chunk(int* pointer, int length)
+        public Chunk(int* registers, int* pointer, int length)
         {
+            RegistersPool = registers;
             Pointer = pointer;
             Length = length;
+
+            EndIndex = (StartIndex = (int)(Pointer - registers)) + length - 1;
         }
 
+        public int* RegistersPool;
         public int* Pointer;
         public int Length;
 
         public int* EndPointer => Pointer + Length;
+        public int StartIndex, EndIndex;
 
         // for debugging
         public int E0 => Pointer[0];
         public int E1 => Pointer[1];
         public int E2 => Pointer[2];
 
-        public static Chunk Empty = new(null, 0);
+        public static Chunk Empty = new(null, null, 0);
 
         public int this[int index] => Pointer[index];
         public int this[Index index] => Pointer[IndexToInt(index)];
@@ -183,13 +186,13 @@ public unsafe class Algorithm : IDisposable
                 var start = IndexToInt(range.Start);
                 var end = IndexToInt(range.End);
                 var length = end - start;
-                return new(Pointer + start, length);
+                return new(RegistersPool, Pointer + start, length);
             }
         }
 
         int IndexToInt(Index index) => index.IsFromEnd ? Length - index.Value : index.Value;
 
-        public int[] ToArray(Algorithm algorithm)
+        public int[] ToArray()
         {
             var length = Length;
             var array = new int[length];
@@ -199,10 +202,10 @@ public unsafe class Algorithm : IDisposable
             return array;
         }
 
-        public Chunk Concat(Chunk with) => new(Pointer, Length + with.Length);
-        public Chunk Concat(Chunk* with) => new(Pointer, Length + with->Length);
+        public Chunk Concat(Chunk with) => new(RegistersPool, Pointer, Length + with.Length);
+        public Chunk Concat(Chunk* with) => new(RegistersPool, Pointer, Length + with->Length);
 
-        public static Chunk FromBclArray(int* pointer, int[] array) => new(pointer, array.Length);
+        public static Chunk FromBclArray(int* pointer, int[] array) => new(pointer, pointer, array.Length);
     }
 
     Node JoinRecursive(int maxLimit, int decimalOrderMaxLimit, Node root, bool rearrange)
@@ -324,7 +327,7 @@ public unsafe class Algorithm : IDisposable
         var garbage = 0;
         while (node is not null)
         {
-            garbage += bakedGarbage[node.EndIndex] - bakedGarbage[node.StartIndex];
+            garbage += bakedGarbage[node.Registers.EndIndex] - bakedGarbage[node.Registers.StartIndex];
             node = node.Next;
         }
         return garbage;
